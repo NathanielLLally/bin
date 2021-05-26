@@ -1,0 +1,359 @@
+#!/usr/bin/perl
+
+#CONNECTION_ID="Phone_USB" /etc/NetworkManager/dispatcher.d/30-local-routes eth1 up
+
+package WorkflowAddIdents;
+#
+# TODO: use a statemachine and remove sudo
+#
+use strict;
+use namespace::clean;
+use Workflow::Lite;
+use Archive::Cpio;
+use Proc::Daemon;
+use Try::Tiny;
+use Moose;
+use Cwd;
+use File::Spec;
+use Getopt::Long;
+our %opts = ();
+GetOptions(\%opts,"image=s", "archive=s", "verbose", "help");
+
+has ARGV => ( traits => ['Hash'], is => 'rw', isa => 'HashRef', default => sub { return \%opts; }, handles => { option => 'get'});
+
+has logFile => ( is => 'rw', isa => 'Str', default => "/tmp/ggpg2keyring.log" );
+has _logFH => ( is => 'rw', isa => 'FileHandle', lazy => 1,
+  default => sub {
+    my $s = shift;
+    my $fh; open($fh, ">".$s->logFile) || die "cannot open ".$s->logFile; $fh; 
+    });
+has loopDev => ( is => 'rw', isa => 'Str', default => sub { "loop9"; } ); # check for next avail
+#argv 1
+#has imageFile => ( is => 'rw', isa => '', lazy => 1,
+#  default => sub { my $s = shift; $s->ARGV->{image} && @_->ARGV->{image} || undef; }
+#);
+
+# $2
+#has archiveFile => ( is => 'rw', isa => 'Str', lazy => 1,
+#  default => sub { shift @ARGV || ""; }
+#);
+
+has existingIdents => ( is => 'rw', isa => 'Num', default => 0);
+has runningAgentSock => ( is => 'rw', isa => 'Any', lazy => 1, 
+default => sub {
+  my $s = shift;
+
+  my $pid = $s->runningAgentPID;
+  my $line = $s->openCommand("sudo netstat -lnp | grep ssh | grep $pid | awk '{print \$10}'");
+  return $line if (-e $line);
+
+  #  if no root, and multiple agents, will have to guess
+  #
+  my @line = $s->openCommandArrayRef("netstat -ln | grep ssh| awk '{print \$9}'");
+  $line[0];
+});
+
+#  TODO: 
+#
+has runningAgentPID => ( is => 'rw', isa => 'Any', lazy => 1, 
+default => sub {
+  my $s = shift;
+  my $pids = $s->openCommandArrayRef("pgrep ssh-agent");
+  return @$pids[-1];
+  #  $s->openCommand("ps u | grep ssh-agent | grep -v grep | awk '{print $2}'")
+});
+
+sub debug {
+  my $s = shift;
+  return unless (exists $opts{"verbose"});
+
+  my $fh = $s->_logFH;
+  print $fh join(" ", @_)."\n";
+  print STDOUT join(" ", @_)."\n";
+}
+
+sub info {
+  my $s = shift;
+  my $fh = $s->_logFH;
+  print $fh join(" ", @_)."\n";
+  print STDOUT join(" ", @_)."\n";
+}
+
+sub error {
+  my $s = shift;
+  my $fh = $s->_logFH;
+  print $fh  "Error: ".join(" ", @_)."\n";
+  print STDERR join(" ", @_)."\n";
+  exit 1;
+}
+
+
+sub DEMOLISH {
+  my $s = shift;
+  close($s->logFile);
+}
+
+step START => sub  {
+    my ($s,$arg) = @_;
+    $s->flow("checkIdent");
+};
+
+step loadAgentEnvFile => sub {
+  my ($s, $arg) = @_;
+  my $envFile = "$ENV{HOME}/.ssh/environment";
+  open(FH, $envFile) || die "cannot open environment file $envFile";
+  while (my $line = <FH>) {
+    chomp $line;
+    while ($line =~ /(((?<ENV>.*?)=(?<var>.*?))|((?<SHCMD>echo|export) (?<OP>.*?)));/gc) {
+      if (defined $+{SHCMD}) {
+        $s->info("$+{SHCMD} $+{OP}");
+      }
+      if (defined $+{ENV}) {
+        $ENV{$+{ENV}} = $+{var};
+      }
+    }
+  }
+  close(FH);
+  if (defined $arg) {
+    $s->flow("$arg");
+  } else {
+    $s->flow("loopIt");
+  }
+};
+
+
+#  incorporate exportAuthSock.sh here
+#
+step startAgent => sub {
+  my ($s,$arg) = @_;
+  my $FILE = "environment";
+  my $USER = $ENV{USER};
+  my $daemon = Proc::Daemon->new(
+    work_dir => "$ENV{HOME}/.ssh/",
+    exec_command => "/usr/bin/ssh-agent -a /tmp/$USER.sock",
+    child_STDOUT => "$FILE",
+  );
+  my $pid = $daemon->Init();
+  $pid = $daemon->Status();
+  $s->flow("loadAgentEnvFile");
+  $s->runningAgentPID($pid);
+  return "new agent $pid";
+};
+
+step ensureAgent => sub {
+  my ($s,$arg) = @_;
+  my $rv = "ensureAgent called";
+  if (length $s->runningAgentPID == 0 and length $s->runningAgentSock == 0) {
+    $s->flow("startAgent");
+    $rv = "began new agent ". $s->runningAgentPID;
+  }  else {
+    $s->debug("existing ssh-agent socket :".$s->runningAgentSock. " pid: ".$s->runningAgentPID);
+    $s->flow("writeEnvFile");
+    $rv = "using existing agent ". $s->runningAgentPID;
+  }
+  return $rv;
+};
+
+step writeEnvFile => sub {
+  my ($s,$arg) = @_;
+  $s->debug("writeEnvFile begin");
+  my ($pid, $sock) = ($s->runningAgentPID, $s->runningAgentSock);
+  my @path = File::Spec->splitdir($ENV{HOME});
+  push @path,'.ssh';
+  push @path, "environment";
+  my $FILE = File::Spec->catdir(@path);
+  open(FILE, ">$FILE") || $s->error("cannot output to $FILE");
+  print FILE <<EOF;
+SSH_AUTH_SOCK=$sock; export SSH_AUTH_SOCK;
+SSH_AGENT_PID=$pid; export SSH_AGENT_PID;
+echo Agent pid $pid;
+EOF
+  close(FILE);
+  $s->flow("loadAgentEnvFile", "checkIdent");
+  return "$FILE file updated";
+};
+
+step checkIdent => sub {
+  my ($s,$arg) = @_;
+  my $cmd = '/usr/bin/ssh-add -l';
+  my $x = 0;
+  open(CMD, "$cmd 2>&1 |");
+  while(<CMD>) {
+    chomp;
+    if ($_ =~ /(Error connecting)|(Could not open)/) {
+      $s->flow("ensureAgent");
+      #      $s->debug($rv);
+      return "could'nt reach keyring agent initially, checking for idents again";
+    } elsif ( $_ !~ /identities/) { #no idents
+      $x++;
+    };
+  }
+  $s->existingIdents($x);
+  if ($x > 0) {
+    $s->info("we have $x identities");
+    $s->flow("writeEnvFile");
+  } else {
+    $s->flow("loopIt");
+  }
+  return "found $x identities";
+};
+ 
+#  wouldn't hurt to add test for success as well
+#
+sub openCommand
+{
+  my ($s,$cmd, $reErr) = @_;
+	open (CMD, "$cmd 2>&1 |") || die "couldn't open $cmd";
+  my $out = "";
+  while (<CMD>) { 
+    chomp;
+    if (defined $reErr) {
+      if ($_ =~ $reErr) { die "$cmd: $_"; }
+    }
+    $out .= $_;
+  };
+  close(CMD);
+  return $out;
+}
+
+sub openCommandArrayRef
+{
+  my ($s,$cmd, $reErr) = @_;
+	open (CMD, "$cmd 2>&1 |") || die "couldn't open $cmd";
+  my @out = ();
+  while (<CMD>) {
+    chomp;
+    if (defined $reErr) {
+      if ($_ =~ $reErr) { die "$cmd: $_"; }
+    }
+    push @out, $_
+  };
+  close(CMD);
+  return \@out;
+}
+
+#  could combine this guy into ^^
+#
+step loopIt => sub {
+  my ($s,$arg) = @_;
+  my $lo = $s->loopDev;
+  my $file = $s->option("image");
+  if (not -e $file) {
+    $s->debug("Missing given image $file");
+    $file = '/mnt/07r1/Download/images/drivedroid.img';
+  }
+  if (not -e $file) {
+    $s->error("Missing image, $file");
+  }
+  my $cmd = "losetup /dev/$lo $file -o \$((492 * 512))";
+  try {
+    $s->openCommand($cmd, qr/failed/);
+  } catch {
+    return "No such file or directory";
+  };
+  $cmd = "file -s /dev/$lo";
+  try {
+    $s->openCommand($cmd, qr/permission|empty/);
+  } catch {
+    return $_;
+  };
+  $s->flow("mountLoop");
+};
+
+step mountLoop => sub {
+  my ($s,$arg) = @_;
+  my $lo = $s->loopDev;
+  my $cmd = "sudo mount /dev/$lo /media/gnupg/keyring/";
+  try {
+    $s->openCommand($cmd, qr/superblock|root/);
+  } catch {
+    return $_;
+  };
+  $cmd = "cat /proc/mounts | grep /media/gnupg/keyring || echo nocifsmount";
+  try {
+    $s->openCommand($cmd, qr/nocifsmount/);
+  } catch {
+    return $_;
+  };
+  $s->flow("addArchive");
+};
+
+step addArchive => sub {
+  my ($s,$arg) = @_;
+  my $ar = Archive::Cpio->new;
+  my $file = $s->option("archive");
+  if (not -x $file) {
+    $file = '/media/gnupg/keyring/loader/creds.cpio';
+  }
+  if (not -x $file) {
+    $file = File::Spec->rel2abs('keyring/loader/creds.cpio');
+  }
+  if (not -x $file) {
+    $s->error("Missing archive");
+  }
+  $ar->read($file);
+
+  my @files = $ar->get_files();
+
+#  add them
+#
+  my $counter=0;
+  foreach my $f (@files) {
+    open (PIPE, "| /bin/env SSH_AUTH_SOCK=$ENV{SSH_AUTH_SOCK} SSH_AGENT_PID=$ENV{SSH_AGENT_PID} /bin/ssh-add - 2>&1 > /dev/null"); 
+    print PIPE $f->get_content();
+
+    #    print "writing key file\n";
+    #    open(FILE, ">/tmp/".++$counter.".key") || die "cannot open file";
+    #    print FILE $f->get_content();
+    #    close FILE;
+    close (PIPE);
+  }
+  $s->flow("unMount");
+};
+
+step unMount => sub {
+  my ($s,$arg) = @_;
+  my $lo = $s->loopDev;
+  my $cmd = "sudo umount /dev/$lo";
+  try {
+    $s->openCommand($cmd, qr/root/); #expound
+  } catch {
+    return $_;
+  };
+  $s->flow("unloopIt");
+};
+
+step unloopIt => sub {
+  my ($s,$arg) = @_;
+  my $lo = $s->loopDev;
+  my $cmd = "losetup -d /dev/$lo";
+  try {
+    $s->openCommand($cmd, qr/detach failed/); #expound
+  } catch {
+    return $_;
+  };
+  $s->end;
+};
+
+1;
+
+package Main;
+
+if (exists $opts{'help'}) {
+print <<EOF
+  ggpg2keyring
+    insert blurb here
+
+EOF
+;
+exit 0;
+
+}
+my $wf = WorkflowAddIdents->new;
+
+while( $wf->is_flowing ) {
+  my $rv = $wf->work( );
+  defined $rv && $wf->debug("$rv");
+}
+
+exit 1;

@@ -1,0 +1,8 @@
+#!/bin/sh
+
+cd $HOME
+cp .razorsql/data/profiles.txt .
+rm -rf .razorsql/
+rm -rf .java/
+cp profiles.txt .razorsql/data/
+

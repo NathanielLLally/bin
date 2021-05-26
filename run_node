@@ -1,0 +1,13 @@
+#!/bin/sh
+
+CMD=$0
+
+PARAMS=""
+
+LOGFILE=/home/nathaniel/log/run_node.log
+WD=/home/nathaniel/src/git/rlsepp
+cd $WD
+echo "begin run_cmd `date` `pwd`" >> $LOGFILE
+echo "   $WD/bin/$CMD $PARAMS" >> $LOGFILE
+
+env NODE_PATH=$WD /usr/bin/node bin/$1 $2 $3 $4 $5 $6 $7 $8 $9 2>&1 >> $LOGFILE

@@ -1,0 +1,6 @@
+#!/bin/sh
+
+for i in $(loginctl --no-legend list-sessions | awk '{print $1}');do
+  loginctl show-session -p Name -p Active -p Remote -p Type -p Display "$i" | cperl 's/\n/|/g && print $_'
+  printf "\n"
+done

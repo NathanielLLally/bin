@@ -1,0 +1,7 @@
+#!/bin/sh
+
+FILE=$1
+NAME=`echo $FILE | sed 's/\.jpg//'`
+OUT="$NAME"_cut.jpg
+
+convert $FILE -repage 8453x4096 \( -clone 0 -crop 261x4096+0+0 -repage +8191+0\! \) -flatten -crop 8192x4096+261+0 $OUT

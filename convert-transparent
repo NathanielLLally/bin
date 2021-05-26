@@ -1,0 +1,16 @@
+#!/bin/sh
+
+FILE=$1
+PFX=`echo $FILE | sed 's/\..*//g'`
+convert -colorspace HSB -separate $FILE "$PFX"_mask.png
+convert -black-threshold 2% "$PFX"_mask-2.png "$PFX"_mask-3.png
+convert -set option:modulate:colorspace hsb -modulate 750,100,100 "$PFX"_mask-3.png "$PFX"_mask-4.png
+convert -white-threshold 35% "$PFX"_mask-4.png "$PFX"_mask-5.png
+
+convert -virtual-pixel edge -blur 100% "$PFX"_mask-5.png "$PFX"_mask_final.png
+#convert-feather -d 4 "$PFX"_mask-5.png "$PFX"_mask_final.png
+
+convert $FILE -alpha Off "$PFX"_mask_final.png -compose CopyOpacity -composite PNG32:"$PFX"_alpha.png
+convert -fuzz 15% -trim +repage "$PFX"_alpha.png alpha/$FILE
+
+#rm "$PFX"_mask* "$PFX"_alpha.png

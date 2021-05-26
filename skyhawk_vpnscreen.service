@@ -1,0 +1,15 @@
+[Unit]
+Description=Runs a new detached logging screen session named vpn
+#Description=Runs /usr/local/bin/vpnscreen.sh in a new screen session
+
+  
+[Service]
+
+ExecStart=/usr/bin/screen -L -DmS vpn
+Type=oneshot
+WorkingDirectory=/home/nathaniel
+
+#PIDFile=/var/run/vpnscreen.pid
+[Install]
+
+WantedBy=default.target

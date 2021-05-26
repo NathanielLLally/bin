@@ -1,0 +1,3 @@
+#!/bin/sh
+
+rpm -qa --queryformat '%{size} %{name}\n' | sort -rn | more

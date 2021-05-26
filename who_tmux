@@ -1,0 +1,49 @@
+#!/usr/bin/perl
+use Data::Dumper;
+
+our $DEBUG = 0;
+my $sock="";
+$sock = "-S ".$ARGV[0] if $ARGV[0];
+
+my $SOCKETPATH = `ls -1d /tmp/tmux*`;
+chomp $SOCKETPATH;
+$SOCKETPATH.="/";
+
+print "using socket path: $SOCKETPATH\n" if ($DEBUG);
+
+my @sockets = `ls -1 ${SOCKETPATH}`;
+chomp @sockets;
+
+my %out;
+my @clients;
+NEXT: for my $sock (@sockets) {
+
+  #print "tmux -S $SOCKETPATH$sock list-clients 2>&1\n";
+  print "tmux -S $SOCKETPATH$sock list-clients 2>&1\n" if ($DEBUG);
+  my @lines = `tmux -S $SOCKETPATH$sock list-clients 2>&1`;
+  chomp @lines;
+  if ($lines[0] =~ /no server running/) {
+  } elsif ($lines[0] =~ /pts/) {
+    if (not exists $out{"$sock"}) {
+      $out{"$sock"} = ();
+    }
+    foreach my $line (@lines) {
+      push @{$out{"$sock"}}, $line;
+    }
+  }
+}
+
+printf("%-10.10s\t%-10.10s\t%-10.10s\t%-10.10s\t%-16.16s\t%s\n", "Socket", "Session", "TTY", "Username", "Timestamp", "Origin");
+foreach my $sock (keys %out) {
+  my @lines = @{$out{$sock}};
+  foreach my $line (@lines) {
+	  my @cols = split(' ', $line);
+	  my ($tty) = $cols[0] =~ /^\/dev\/(pts\/\d+)/;
+	  my $session = $cols[1];
+	  print "$who\n" if ($DEBUG);
+	  my $who = `who | grep $tty`;
+	  my @whoc = split(' ',$who);
+
+	  printf("%-10.10s\t%-10.10s\t%-10.10s\t%-10.10s\t%-16.16s\t%s\n", $sock, $session,$tty,$whoc[0], "$whoc[2] $whoc[3]", $whoc[4]);
+  }
+}
