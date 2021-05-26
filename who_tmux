@@ -1,7 +1,12 @@
 #!/usr/bin/perl
 use Data::Dumper;
 
-our $DEBUG = 0;
+#
+#  TODO: list-sessions produces multiple lined output
+#      currently, its a LIFO on the output
+#
+
+our $DEBUG = 1;
 my $sock="";
 $sock = "-S ".$ARGV[0] if $ARGV[0];
 
@@ -14,9 +19,9 @@ print "using socket path: $SOCKETPATH\n" if ($DEBUG);
 my @sockets = `ls -1 ${SOCKETPATH}`;
 chomp @sockets;
 
-my %out;
-my @clients;
-NEXT: for my $sock (@sockets) {
+
+my (%listclients, %listsessions);
+for my $sock (@sockets) {
 
   #print "tmux -S $SOCKETPATH$sock list-clients 2>&1\n";
   print "tmux -S $SOCKETPATH$sock list-clients 2>&1\n" if ($DEBUG);
@@ -24,26 +29,80 @@ NEXT: for my $sock (@sockets) {
   chomp @lines;
   if ($lines[0] =~ /no server running/) {
   } elsif ($lines[0] =~ /pts/) {
-    if (not exists $out{"$sock"}) {
-      $out{"$sock"} = ();
+    if (not exists $listclients{"$sock"}) {
+      $listclients{"$sock"} = ();
     }
     foreach my $line (@lines) {
-      push @{$out{"$sock"}}, $line;
+      print "$line\n" if ($DEBUG);
+      push @{$listclients{"$sock"}}, $line;
     }
   }
 }
 
-printf("%-10.10s\t%-10.10s\t%-10.10s\t%-10.10s\t%-16.16s\t%s\n", "Socket", "Session", "TTY", "Username", "Timestamp", "Origin");
-foreach my $sock (keys %out) {
-  my @lines = @{$out{$sock}};
-  foreach my $line (@lines) {
-	  my @cols = split(' ', $line);
-	  my ($tty) = $cols[0] =~ /^\/dev\/(pts\/\d+)/;
-	  my $session = $cols[1];
-	  print "$who\n" if ($DEBUG);
-	  my $who = `who | grep $tty`;
-	  my @whoc = split(' ',$who);
 
-	  printf("%-10.10s\t%-10.10s\t%-10.10s\t%-10.10s\t%-16.16s\t%s\n", $sock, $session,$tty,$whoc[0], "$whoc[2] $whoc[3]", $whoc[4]);
+for my $sock (@sockets) {
+  my $cmd = "tmux -S $SOCKETPATH$sock list-sessions 2>&1";
+  print "$cmd\n" if ($DEBUG);
+  my @lines = `$cmd`;
+  chomp @lines;
+  #3 windows (created Wed May 19 21:42:26 2021) [144x30]
+  if ($lines[0] =~ /no server running/) {
+  } else {
+    if (not exists $listsessions{"$sock"}) {
+      $listsessions{"$sock"} = ();
+    }
+    foreach my $line (@lines) {
+      print "$line\n" if ($DEBUG);
+      push @{$listsessions{"$sock"}}, $line;
+    }
   }
 }
+
+
+#print Dumper(\%listclients);
+#print Dumper(\%listsessions);
+#      $sock, $session,$win, $size, $ctime, $tty,$whoc[0], "$whoc[2] $whoc[3]", $whoc[4]);
+printf("%-10.10s\t%-4.4s\t%-0.3s\t%-10.10s\t%-16.16s\t%-10.10s\t%-10.10s\t%-16.16s\t%s\n", "Socket", "Sess", "Win", "Size", "Creation", "TTY", "Username", "Timestamp", "Origin");
+
+my %out = {};
+foreach my $sock (keys %listclients) {
+    @{$out{$sock}} = (undef,undef,undef,'','','','','','');
+  my @lines = @{$listclients{$sock}};
+  my ($session, $who, $tty, $win, $size, $ctime, @whoc);
+  foreach my $line (@lines) {
+	  my @cols = split(' ', $line);
+	  $tty = $cols[0] =~ /^\/dev\/(pts\/\d+)/;
+    if (defined $tty) { #tmux list-clients
+      @{$out{$sock}}[0] = $sock;
+      @{$out{$sock}}[1] = $cols[1];
+#      $sock, $session,$win, $size, $ctime, $tty,$whoc[0], "$whoc[2] $whoc[3]", $whoc[4]);
+  	  $who = `who | grep $tty`;
+  	  @whoc = split(' ',$who);
+      @{$out{$sock}}[5] = $tty;
+      @{$out{$sock}}[6] = $whoc[0];
+      @{$out{$sock}}[7] = $whoc[2];
+      @{$out{$sock}}[8] = $whoc[3];
+      @{$out{$sock}}[9] = $whoc[4];
+    } 
+  }
+}
+foreach my $sock (keys %listsessions) {
+  if (not exists $out{$sock}) {
+    @{$out{$sock}} = (undef,undef,undef,'','','','','','');
+  }
+  my @lines = @{$listsessions{$sock}};
+  foreach my $line (@lines) {
+    $line =~ /(\d+) ?windows.*?created (.*?)\).*(\[.*?\]).*?(attached)?/;
+    @{$out{$sock}}[0] = $sock;
+    @{$out{$sock}}[2] = $1;
+    @{$out{$sock}}[3] = $3;
+    @{$out{$sock}}[4] = $2;
+  }
+}
+#print Dumper(\%out);
+foreach my $sock (keys %out) {
+  my @line = @{$out{$sock}};
+  printf("%-10.10s\t%-4.4s\t%-0.3s\t%-10.10s\t%-16.16s\t%-10.10s\t%-10.10s\t%-16.16s\t%s\n", 
+      @line);
+}
+
